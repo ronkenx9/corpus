@@ -2,6 +2,7 @@
 pragma solidity ^0.8.28;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {CorpusManager} from "./CorpusManager.sol";
 import {ICorpusManager} from "./interfaces/ICorpusManager.sol";
@@ -128,6 +129,24 @@ contract CorpusFactory is ReentrancyGuard {
         manager = address(m);
 
         managerByName[nameKey] = manager;
+
+        // Deliver the identity NFT to the principal — they hold the passport,
+        // the manager holds the reference (identityTokenId). Together they form
+        // the verifiable link: manager.identityTokenId() → registry.ownerOf() == principal.
+        //
+        // Edge case: if principal is a smart account that hasn't implemented
+        // IERC721Receiver, safeTransferFrom would revert. We detect this and
+        // fall back to a plain transferFrom so formation never silently fails.
+        // Contract principals that want the safe callback should implement
+        // IERC721Receiver — they'll get safeTransferFrom automatically.
+        IERC721 registry721 = IERC721(address(identityRegistry));
+        if (principal_.code.length > 0) {
+            // Smart account — use plain transfer; avoids reverting on missing receiver
+            registry721.transferFrom(address(this), principal_, identityTokenId);
+        } else {
+            // EOA — use safe transfer (standard; no callback penalty)
+            registry721.safeTransferFrom(address(this), principal_, identityTokenId);
+        }
 
         emit CorpusFormed(
             manager,

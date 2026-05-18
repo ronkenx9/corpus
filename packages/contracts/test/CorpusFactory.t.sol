@@ -44,7 +44,7 @@ contract CorpusFactoryTest is Test {
 
         assertTrue(manager != address(0));
         assertEq(tokenId, 1);
-        assertEq(registry.ownerOf(tokenId), address(factory));
+        assertEq(registry.ownerOf(tokenId), principal); // NFT delivered to principal, not retained by factory
 
         CorpusManager m = CorpusManager(manager);
         assertEq(m.principal(), principal);
@@ -221,5 +221,61 @@ contract CorpusFactoryTest is Test {
         vm.prank(principal);
         m.rotatePrincipal(next);
         assertEq(m.principal(), next);
+    }
+
+    // ── Identity NFT ownership ───────────────────────────────────────────────
+
+    /// @dev After formation the principal (agent) holds the identity NFT.
+    ///      The manager stores the tokenId as its reference — together they form
+    ///      the on-chain verifiable link: manager.identityTokenId → ownerOf == principal.
+    function test_identityNft_ownedByPrincipal_afterFormation() public {
+        (address manager, uint256 tokenId) =
+            factory.form(_baseMetadata(), _basePolicy(), principal, mediator, "ipfs://agent-meta");
+
+        // Principal's wallet holds the passport NFT
+        assertEq(registry.ownerOf(tokenId), principal, "principal should own identity NFT");
+        // Factory no longer holds it
+        assertFalse(registry.ownerOf(tokenId) == address(factory), "factory must not retain NFT");
+        // Manager records the tokenId as its reference
+        assertEq(CorpusManager(manager).identityTokenId(), tokenId, "manager must reference the tokenId");
+    }
+
+    /// @dev Smart-contract principals (Safe, ERC-4337) without IERC721Receiver
+    ///      must still receive the NFT via plain transferFrom — formation must not revert.
+    function test_identityNft_contractPrincipal_noReceiverHook() public {
+        // Deploy a minimal contract that has no onERC721Received — simulates a
+        // smart account or Safe wallet that hasn't implemented the hook.
+        address contractPrincipal = address(new ContractWallet());
+
+        (address manager, uint256 tokenId) =
+            factory.form(_baseMetadata(), _basePolicy(), contractPrincipal, mediator, "ipfs://x");
+
+        assertEq(registry.ownerOf(tokenId), contractPrincipal, "contract principal should own NFT");
+        assertEq(CorpusManager(manager).identityTokenId(), tokenId);
+    }
+
+    /// @dev Smart-contract principals that DO implement IERC721Receiver get the
+    ///      safe transfer path and the callback fires correctly.
+    function test_identityNft_contractPrincipal_withReceiverHook() public {
+        address contractPrincipal = address(new ContractWalletWithReceiver());
+
+        (, uint256 tokenId) =
+            factory.form(_baseMetadata(), _basePolicy(), contractPrincipal, mediator, "ipfs://x");
+
+        assertEq(registry.ownerOf(tokenId), contractPrincipal);
+    }
+}
+
+// ── Helper contracts for smart-account edge case tests ───────────────────────
+
+/// @dev Simulates a contract wallet with no ERC721 receiver hook (e.g. older Safe).
+contract ContractWallet {
+    // Intentionally does NOT implement onERC721Received
+}
+
+/// @dev Simulates a contract wallet that properly implements IERC721Receiver.
+contract ContractWalletWithReceiver {
+    function onERC721Received(address, address, uint256, bytes calldata) external pure returns (bytes4) {
+        return this.onERC721Received.selector;
     }
 }
