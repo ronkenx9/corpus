@@ -9,7 +9,7 @@ export type EntityMetadata = {
   articlesHash: Hex;
   /** keccak256 of the Operating Agreement PDF. */
   operatingAgreementHash: Hex;
-  /** block.timestamp written at formation. Pass 0 — the contract does not enforce it. */
+  /** block.timestamp at formation. Pass 0 — the contract overwrites this with block.timestamp. */
   formedAt: bigint;
 };
 
@@ -33,4 +33,74 @@ export type FormResult = {
   manager: Address;
   identityTokenId: bigint;
   txHash: Hex;
+};
+
+export enum DisputeStatus {
+  None = 0,
+  Open = 1,
+  Resolved = 2,
+}
+
+export type Dispute = {
+  id: bigint;
+  counterparty: Address;
+  amountAtIssue: bigint;
+  status: DisputeStatus;
+  openedAt: bigint;
+};
+
+/**
+ * Snapshot of an entity's full on-chain state. Returned by {@link CorpusClient.getEntityState}.
+ */
+export type EntityState = {
+  manager: Address;
+  metadata: EntityMetadata;
+  policy: SpendingPolicy;
+  principal: Address;
+  mediator: Address;
+  identityTokenId: bigint;
+  treasuryBalance: bigint;
+  todaySpent: bigint;
+  nextDisputeId: bigint;
+};
+
+export type VerificationResult = {
+  verified: boolean;
+  reason?: string;
+  manager: Address;
+  identityTokenId: bigint;
+  expectedOwner: Address;
+  actualOwner: Address;
+  state: EntityState;
+};
+
+export type PaymentEvent = {
+  blockNumber: bigint;
+  txHash: Hex;
+  counterparty: Address;
+  amount: bigint;
+  memoHash: Hex;
+};
+
+export type DisputeOpenedEvent = {
+  blockNumber: bigint;
+  txHash: Hex;
+  disputeId: bigint;
+  counterparty: Address;
+  reason: string;
+};
+
+export type DisputeResolvedEvent = {
+  blockNumber: bigint;
+  txHash: Hex;
+  disputeId: bigint;
+  counterparty: Address;
+  award: bigint;
+  evidenceHash: Hex;
+};
+
+/** Result of a write transaction. Call `wait()` to block until included. */
+export type TxResult = {
+  txHash: Hex;
+  wait: () => Promise<{ blockNumber: bigint; status: "success" | "reverted" }>;
 };
