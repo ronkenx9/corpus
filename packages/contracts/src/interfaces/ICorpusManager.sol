@@ -24,7 +24,7 @@ interface ICorpusManager {
     }
 
     event PaymentExecuted(
-        address indexed counterparty, uint256 amount, bytes32 indexed memoHash
+        address indexed counterparty, uint128 amount, bytes32 indexed memoHash
     );
     event AllowlistUpdated(address indexed counterparty, bool allowed);
     event PolicyUpdated(uint128 dailyCapUsdc, bool allowlistOnly);
@@ -32,11 +32,12 @@ interface ICorpusManager {
     event DisputeResolved(
         uint256 indexed disputeId,
         address indexed counterparty,
-        uint256 awardToCounterparty,
+        uint128 awardToCounterparty,
         bytes32 evidenceHash
     );
     event PrincipalRotated(address indexed previous, address indexed next);
     event MediatorRotated(address indexed previous, address indexed next);
+    event Initialized(address indexed principal, address indexed mediator, uint256 identityTokenId);
 
     function metadata() external view returns (EntityMetadata memory);
     function policy() external view returns (SpendingPolicy memory);
@@ -44,10 +45,10 @@ interface ICorpusManager {
     function principal() external view returns (address);
     function mediator() external view returns (address);
 
-    function pay(address counterparty, uint256 amount, bytes32 memoHash) external;
-    function openDispute(address counterparty, string calldata reason)
+    function pay(address counterparty, uint128 amount, bytes32 memoHash) external;
+    function openDispute(address counterparty, uint128 amountClaimed, string calldata reason)
         external
         returns (uint256 disputeId);
-    function resolveDispute(uint256 disputeId, uint256 awardToCounterparty, bytes32 evidenceHash)
+    function resolveDispute(uint256 disputeId, uint128 awardToCounterparty, bytes32 evidenceHash)
         external;
 }

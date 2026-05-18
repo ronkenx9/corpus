@@ -26,31 +26,28 @@ export function PassportCard({
     if (!publicClient) return;
     let cancelled = false;
     (async () => {
-      try {
-        const [bal, m, p] = await Promise.all([
-          publicClient.readContract({
+      const tryRead = async <T,>(fn: string): Promise<T | null> => {
+        try {
+          return (await publicClient.readContract({
             address: manager,
             abi: corpusManagerAbi,
-            functionName: "treasuryBalance",
-          }) as Promise<bigint>,
-          publicClient.readContract({
-            address: manager,
-            abi: corpusManagerAbi,
-            functionName: "metadata",
-          }) as Promise<Metadata>,
-          publicClient.readContract({
-            address: manager,
-            abi: corpusManagerAbi,
-            functionName: "policy",
-          }) as Promise<{ dailyCapUsdc: bigint; allowlistOnly: boolean }>,
-        ]);
-        if (cancelled) return;
-        setBalance(bal);
-        setMeta({ legalName: m.legalName, jurisdiction: m.jurisdiction });
-        setPolicy({ dailyCap: p.dailyCapUsdc, allowlistOnly: p.allowlistOnly });
-      } catch (e) {
-        console.error(e);
-      }
+            functionName: fn,
+          })) as T;
+        } catch (e) {
+          console.warn(`[passport] read '${fn}' failed`, e);
+          return null;
+        }
+      };
+
+      const [bal, m, p] = await Promise.all([
+        tryRead<bigint>("treasuryBalance"),
+        tryRead<Metadata>("metadata"),
+        tryRead<{ dailyCapUsdc: bigint; allowlistOnly: boolean }>("policy"),
+      ]);
+      if (cancelled) return;
+      if (bal !== null) setBalance(bal);
+      if (m) setMeta({ legalName: m.legalName, jurisdiction: m.jurisdiction });
+      if (p) setPolicy({ dailyCap: p.dailyCapUsdc, allowlistOnly: p.allowlistOnly });
     })();
     return () => {
       cancelled = true;

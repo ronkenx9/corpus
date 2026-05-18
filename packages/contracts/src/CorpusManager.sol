@@ -19,6 +19,7 @@ import {ICorpusManager} from "./interfaces/ICorpusManager.sol";
 contract CorpusManager is ICorpusManager, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
+    error NotFactory();
     error NotPrincipal();
     error NotMediator();
     error EmptyCounterparty();
@@ -28,6 +29,9 @@ contract CorpusManager is ICorpusManager, ReentrancyGuard {
     error AwardExceedsClaim();
     error AlreadyInitialized();
     error ZeroAddress();
+    error NotCounterparty();
+    error DisputeCooldown();
+    error PrincipalMediatorCollision();
 
     enum DisputeStatus {
         None,
@@ -37,12 +41,15 @@ contract CorpusManager is ICorpusManager, ReentrancyGuard {
 
     struct Dispute {
         address counterparty;
-        uint256 amountAtIssue; // recorded at open-time; bounds the mediator's award
+        uint128 amountAtIssue;
         DisputeStatus status;
         uint64 openedAt;
     }
 
+    uint256 public constant DISPUTE_COOLDOWN = 1 days;
+
     IERC20 public immutable usdc;
+    address public immutable factory;
 
     // ─── Entity / actors ────────────────────────────────────────────────────────────────
     EntityMetadata internal _metadata;
@@ -53,13 +60,22 @@ contract CorpusManager is ICorpusManager, ReentrancyGuard {
 
     // ─── Spending policy state ──────────────────────────────────────────────────────────
     mapping(address => bool) public allowlist;
-    mapping(uint256 => uint256) public spentOnDay; // day-index (block.timestamp / 1 days) => USDC out
+    mapping(uint256 => uint128) public spentOnDay; // day-index (block.timestamp / 1 days) => USDC out
+
+    // ─── Counterparty tracking ──────────────────────────────────────────────────────────
+    mapping(address => bool) public knownCounterparty;
 
     // ─── Disputes ───────────────────────────────────────────────────────────────────────
     uint256 public nextDisputeId;
     mapping(uint256 => Dispute) public disputes;
+    mapping(address => uint64) public lastDisputeAt;
 
     bool private _initialized;
+
+    modifier onlyFactory() {
+        if (msg.sender != factory) revert NotFactory();
+        _;
+    }
 
     modifier onlyPrincipal() {
         if (msg.sender != principal) revert NotPrincipal();
@@ -71,28 +87,31 @@ contract CorpusManager is ICorpusManager, ReentrancyGuard {
         _;
     }
 
-    constructor(IERC20 usdc_) {
-        if (address(usdc_) == address(0)) revert ZeroAddress();
+    constructor(IERC20 usdc_, address factory_) {
+        if (address(usdc_) == address(0) || factory_ == address(0)) revert ZeroAddress();
         usdc = usdc_;
+        factory = factory_;
     }
 
-    /// @notice One-shot initializer, called by the factory at formation. Separated from the
-    ///         constructor so the factory can deploy via CREATE2 with deterministic addresses.
+    /// @notice One-shot initializer, callable only by the factory that deployed this manager.
     function initialize(
         EntityMetadata calldata md,
         SpendingPolicy calldata sp,
         address principal_,
         address mediator_,
         uint256 identityTokenId_
-    ) external {
+    ) external onlyFactory {
         if (_initialized) revert AlreadyInitialized();
         if (principal_ == address(0) || mediator_ == address(0)) revert ZeroAddress();
+        if (principal_ == mediator_) revert PrincipalMediatorCollision();
         _initialized = true;
         _metadata = md;
+        _metadata.formedAt = uint64(block.timestamp);
         _policy = sp;
         principal = principal_;
         mediator = mediator_;
         identityTokenId = identityTokenId_;
+        emit Initialized(principal_, mediator_, identityTokenId_);
     }
 
     // ─── Views ──────────────────────────────────────────────────────────────────────────
@@ -115,10 +134,8 @@ contract CorpusManager is ICorpusManager, ReentrancyGuard {
 
     // ─── Treasury operations ────────────────────────────────────────────────────────────
 
-    /// @notice Execute a USDC payment to a counterparty under the configured policy. The memo
-    ///         hash is the keccak256 of an off-chain receipt/contract document; readers can
-    ///         resolve it via the off-chain attestation store (IPFS/Irys).
-    function pay(address counterparty, uint256 amount, bytes32 memoHash)
+    /// @notice Execute a USDC payment to a counterparty under the configured policy.
+    function pay(address counterparty, uint128 amount, bytes32 memoHash)
         external
         override
         nonReentrant
@@ -129,11 +146,12 @@ contract CorpusManager is ICorpusManager, ReentrancyGuard {
 
         if (_policy.dailyCapUsdc != 0) {
             uint256 day = block.timestamp / 1 days;
-            uint256 newTotal = spentOnDay[day] + amount;
+            uint128 newTotal = spentOnDay[day] + amount;
             if (newTotal > _policy.dailyCapUsdc) revert DailyCapExceeded();
             spentOnDay[day] = newTotal;
         }
 
+        knownCounterparty[counterparty] = true;
         usdc.safeTransfer(counterparty, amount);
         emit PaymentExecuted(counterparty, amount, memoHash);
     }
@@ -150,43 +168,55 @@ contract CorpusManager is ICorpusManager, ReentrancyGuard {
 
     function rotatePrincipal(address next) external onlyPrincipal {
         if (next == address(0)) revert ZeroAddress();
+        if (next == mediator) revert PrincipalMediatorCollision();
         emit PrincipalRotated(principal, next);
         principal = next;
     }
 
     function rotateMediator(address next) external onlyPrincipal {
         if (next == address(0)) revert ZeroAddress();
+        if (next == principal) revert PrincipalMediatorCollision();
         emit MediatorRotated(mediator, next);
         mediator = next;
     }
 
     // ─── Disputes ───────────────────────────────────────────────────────────────────────
 
-    /// @notice Anyone the contract has transacted with may open a dispute; the principal may
-    ///         also pre-empt by opening one themselves. The Operating Agreement makes the
-    ///         mediator's resolution binding on the LLC.
-    function openDispute(address counterparty, string calldata reason)
+    /// @notice Open a dispute. Only the principal or a counterparty with prior payment
+    ///         history may open. Subject to a per-counterparty cooldown to prevent spam.
+    function openDispute(address counterparty, uint128 amountClaimed, string calldata reason)
         external
         override
+        nonReentrant
         returns (uint256 disputeId)
     {
         if (counterparty == address(0)) revert EmptyCounterparty();
+        if (!knownCounterparty[counterparty]) revert NotCounterparty();
         if (msg.sender != principal && msg.sender != counterparty) revert NotPrincipal();
+
+        uint64 last = lastDisputeAt[counterparty];
+        if (last != 0 && block.timestamp - last < DISPUTE_COOLDOWN) revert DisputeCooldown();
+
+        uint256 bal = usdc.balanceOf(address(this));
+        // forge-lint: disable-next-line(unsafe-typecast)
+        uint128 cap = bal > type(uint128).max ? type(uint128).max : uint128(bal);
+        if (amountClaimed > cap) amountClaimed = cap;
 
         disputeId = ++nextDisputeId;
         disputes[disputeId] = Dispute({
             counterparty: counterparty,
-            amountAtIssue: usdc.balanceOf(address(this)),
+            amountAtIssue: amountClaimed,
             status: DisputeStatus.Open,
             openedAt: uint64(block.timestamp)
         });
+        lastDisputeAt[counterparty] = uint64(block.timestamp);
         emit DisputeOpened(disputeId, counterparty, reason);
     }
 
     /// @notice Mediator delivers an attested resolution. The award is paid out of the
     ///         treasury directly; the off-chain attestation (evidenceHash) is the legally
     ///         operative record per the Operating Agreement.
-    function resolveDispute(uint256 disputeId, uint256 awardToCounterparty, bytes32 evidenceHash)
+    function resolveDispute(uint256 disputeId, uint128 awardToCounterparty, bytes32 evidenceHash)
         external
         override
         nonReentrant

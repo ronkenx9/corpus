@@ -6,7 +6,7 @@ import type { Address } from "viem";
 import { arcTestnet } from "@corpus/sdk";
 import { FormHeader } from "@/components/form/FormHeader";
 import { FormationWizard } from "@/components/form/FormationWizard";
-import { PassportCard } from "@/components/form/PassportCard";
+import { Sealed } from "@/components/form/Sealed";
 import { MyAgents } from "@/components/form/MyAgents";
 
 export default function FormPage() {
@@ -94,26 +94,11 @@ export default function FormPage() {
             </p>
           </div>
         ) : formed ? (
-          <div className="space-y-12">
-            <div>
-              <p className="text-[11px] tracking-[0.48em] uppercase text-verified mb-6 flex items-center gap-3">
-                <span className="block w-1.5 h-1.5 rounded-full bg-verified animate-seal-pulse" />
-                Entity Sealed · Live on Arc
-              </p>
-              <h2 className="serif text-bone text-4xl md:text-5xl font-light leading-[1.05] mb-3">
-                Your agent has a body<span className="text-gold">.</span>
-              </h2>
-              <p className="text-stone text-[15px] font-light max-w-2xl">
-                The manager contract is deployed, the ERC-8004 identity is minted, and the
-                operating policy is enforced on-chain.
-              </p>
-            </div>
-            <PassportCard
-              manager={formed.manager}
-              tokenId={formed.tokenId}
-              legalName={formed.legalName}
-            />
-          </div>
+          <Sealed
+            manager={formed.manager}
+            tokenId={formed.tokenId}
+            legalName={formed.legalName}
+          />
         ) : (
           <div className="space-y-16">
             <FormationWizard

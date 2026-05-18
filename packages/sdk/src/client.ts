@@ -39,6 +39,18 @@ export class CorpusClient {
     this.usdc = cfg.usdc ?? (ARC_TESTNET_ADDRESSES.usdc as Address);
   }
 
+  /** Check whether a legal name is already registered on this factory. */
+  async isNameTaken(legalName: string): Promise<{ taken: boolean; existingManager: Address }> {
+    const normalized = CorpusClient.normalizeName(legalName);
+    const result = (await this.publicClient.readContract({
+      address: this.factory,
+      abi: corpusFactoryAbi,
+      functionName: "isNameTaken",
+      args: [normalized],
+    })) as readonly [boolean, Address];
+    return { taken: result[0], existingManager: result[1] };
+  }
+
   /** Form a new CORPUS entity. Returns the manager address + minted identity token ID. */
   async form(params: FormParams): Promise<FormResult> {
     const account = this.walletClient.account;
@@ -84,6 +96,11 @@ export class CorpusClient {
     return { manager: ev.manager, identityTokenId: ev.identityTokenId, txHash };
   }
 
+  /** Normalize a legal name the same way the contract does (trim, collapse spaces, lowercase). */
+  static normalizeName(name: string): string {
+    return name.trim().replace(/\s+/g, " ");
+  }
+
   /** Execute a USDC payment from the entity's treasury under its spending policy. */
   async pay(manager: Address, counterparty: Address, amount: bigint, memo: string): Promise<Hex> {
     const account = this.walletClient.account;
@@ -119,7 +136,7 @@ export class CorpusClient {
   }
 
   /** Open a dispute against the entity (called by counterparty or principal). */
-  async openDispute(manager: Address, counterparty: Address, reason: string): Promise<bigint> {
+  async openDispute(manager: Address, counterparty: Address, amountClaimed: bigint, reason: string): Promise<bigint> {
     const account = this.walletClient.account;
     if (!account) throw new Error("walletClient.account is required");
     const txHash = await this.walletClient.writeContract({
@@ -128,7 +145,7 @@ export class CorpusClient {
       address: manager,
       abi: corpusManagerAbi,
       functionName: "openDispute",
-      args: [counterparty, reason],
+      args: [counterparty, amountClaimed, reason],
     });
     const receipt = await this.publicClient.waitForTransactionReceipt({ hash: txHash });
     const log = receipt.logs.find((l) => l.address.toLowerCase() === manager.toLowerCase());

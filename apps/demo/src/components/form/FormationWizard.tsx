@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   keccak256,
   toHex,
@@ -44,9 +44,51 @@ export function FormationWizard({
   const [submitting, setSubmitting] = useState(false);
   const [phase, setPhase] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
+  const [nameCheck, setNameCheck] = useState<{
+    checking: boolean;
+    taken: boolean;
+    existing: Address | null;
+  }>({ checking: false, taken: false, existing: null });
 
   const factoryReady =
     FACTORY !== "0x0000000000000000000000000000000000000000" && FACTORY.length === 42;
+
+  // Pre-flight name check whenever the user lands on Review and the name is non-empty.
+  // Lets us warn before a doomed `NameAlreadyTaken` revert.
+  useEffect(() => {
+    if (step !== 4 || !factoryReady) return;
+    const trimmed = legalName.trim();
+    if (!trimmed) return;
+    let cancelled = false;
+    setNameCheck((s) => ({ ...s, checking: true }));
+    (async () => {
+      try {
+        const publicClient = createPublicClient({
+          chain: arcTestnet,
+          transport: http(process.env.NEXT_PUBLIC_ARC_RPC_URL ?? "/api/rpc"),
+        });
+        const client = new CorpusClient({
+          publicClient,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          walletClient: {} as any, // read-only — walletClient unused for view calls
+          factory: FACTORY,
+        });
+        const result = await client.isNameTaken(trimmed);
+        if (cancelled) return;
+        setNameCheck({
+          checking: false,
+          taken: result.taken,
+          existing: result.taken ? result.existingManager : null,
+        });
+      } catch (e) {
+        console.warn("[corpus] name check failed", e);
+        if (!cancelled) setNameCheck({ checking: false, taken: false, existing: null });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [step, legalName, factoryReady]);
 
   const submit = async () => {
     if (!address) return setError("Wallet not connected.");
@@ -297,6 +339,30 @@ export function FormationWizard({
               </label>
             )}
 
+            {nameCheck.checking && (
+              <div className="mt-8 px-4 py-3 border border-gold/20 bg-gold/[0.03] text-gold/80 text-[11px] tracking-[0.32em] uppercase font-light flex items-center gap-3">
+                <span className="block w-1.5 h-1.5 rounded-full bg-gold/70 animate-seal-pulse" />
+                Checking name registry…
+              </div>
+            )}
+
+            {nameCheck.taken && nameCheck.existing && (
+              <div className="mt-8 px-5 py-4 border border-red-500/50 bg-red-500/[0.06]">
+                <p className="text-[10px] tracking-[0.42em] uppercase text-red-300 mb-2">
+                  Name Already Taken
+                </p>
+                <p className="text-bone text-[13px] font-light leading-relaxed">
+                  &ldquo;{legalName}&rdquo; is held by another CORPUS entity.
+                </p>
+                <p className="text-stone text-[11px] font-mono mt-2 break-all">
+                  {nameCheck.existing}
+                </p>
+                <p className="text-stone/80 text-[11px] font-light mt-3 leading-relaxed">
+                  Names are case-insensitive on the factory. Choose a different legal name to proceed.
+                </p>
+              </div>
+            )}
+
             {!factoryReady && (
               <div className="mt-8 px-4 py-3 border border-red-500/40 bg-red-500/5 text-red-300 text-[12px] font-mono">
                 NEXT_PUBLIC_FACTORY_ADDRESS not configured. Deploy first.
@@ -329,13 +395,13 @@ export function FormationWizard({
           ) : (
             <button
               className="inline-flex items-center gap-5 border border-gold bg-gold/10 hover:bg-gold/20 px-8 py-3.5 disabled:opacity-40 disabled:hover:bg-gold/10 transition-all"
-              disabled={submitting || !address}
+              disabled={submitting || !address || nameCheck.taken || nameCheck.checking}
               onClick={submit}
             >
               <span className="text-[11px] tracking-[0.42em] uppercase text-gold">
-                {submitting ? phase || "Forming…" : "Seal the Entity"}
+                {submitting ? phase || "Forming…" : nameCheck.taken ? "Name Taken" : "Seal the Entity"}
               </span>
-              <span className="text-gold">{submitting ? "◌" : "▣"}</span>
+              <span className="text-gold">{submitting ? "◌" : nameCheck.taken ? "⊘" : "▣"}</span>
             </button>
           )}
         </div>

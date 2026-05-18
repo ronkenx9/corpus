@@ -129,31 +129,37 @@ contract CorpusFactoryTest is Test {
         m.pay(counterparty, 1, bytes32(0));
     }
 
+    function _makeKnownCounterparty(CorpusManager m) internal {
+        usdc.mint(address(m), 200_000_000);
+        vm.prank(principal);
+        m.pay(counterparty, 10_000_000, keccak256("seed"));
+    }
+
     function test_dispute_resolveAwardsCounterparty() public {
         (address manager,) =
             factory.form(_baseMetadata(), _basePolicy(), principal, mediator, "ipfs://x");
         CorpusManager m = CorpusManager(manager);
-        usdc.mint(manager, 200_000_000);
+        _makeKnownCounterparty(m);
 
         vm.prank(counterparty);
-        uint256 disputeId = m.openDispute(counterparty, "non-delivery");
+        uint256 disputeId = m.openDispute(counterparty, 80_000_000, "non-delivery");
         assertEq(disputeId, 1);
 
         vm.prank(mediator);
         m.resolveDispute(disputeId, 80_000_000, keccak256("evidence.json"));
 
-        assertEq(usdc.balanceOf(counterparty), 80_000_000);
-        assertEq(usdc.balanceOf(manager), 120_000_000);
+        // counterparty got 10M from seed + 80M from dispute
+        assertEq(usdc.balanceOf(counterparty), 90_000_000);
     }
 
     function test_dispute_onlyMediatorCanResolve() public {
         (address manager,) =
             factory.form(_baseMetadata(), _basePolicy(), principal, mediator, "ipfs://x");
         CorpusManager m = CorpusManager(manager);
-        usdc.mint(manager, 100_000_000);
+        _makeKnownCounterparty(m);
 
         vm.prank(counterparty);
-        uint256 disputeId = m.openDispute(counterparty, "x");
+        uint256 disputeId = m.openDispute(counterparty, 50_000_000, "x");
 
         vm.prank(principal);
         vm.expectRevert(CorpusManager.NotMediator.selector);
@@ -164,14 +170,46 @@ contract CorpusFactoryTest is Test {
         (address manager,) =
             factory.form(_baseMetadata(), _basePolicy(), principal, mediator, "ipfs://x");
         CorpusManager m = CorpusManager(manager);
-        usdc.mint(manager, 10_000_000);
+        _makeKnownCounterparty(m);
 
         vm.prank(counterparty);
-        uint256 disputeId = m.openDispute(counterparty, "x");
+        uint256 disputeId = m.openDispute(counterparty, 10_000_000, "x");
 
         vm.prank(mediator);
         vm.expectRevert(CorpusManager.AwardExceedsClaim.selector);
         m.resolveDispute(disputeId, 11_000_000, bytes32(0));
+    }
+
+    function test_dispute_rejectsUnknownCounterparty() public {
+        (address manager,) =
+            factory.form(_baseMetadata(), _basePolicy(), principal, mediator, "ipfs://x");
+        CorpusManager m = CorpusManager(manager);
+        address stranger = makeAddr("stranger");
+
+        vm.prank(stranger);
+        vm.expectRevert(CorpusManager.NotCounterparty.selector);
+        m.openDispute(stranger, 1, "scam");
+    }
+
+    function test_dispute_cooldownEnforced() public {
+        (address manager,) =
+            factory.form(_baseMetadata(), _basePolicy(), principal, mediator, "ipfs://x");
+        CorpusManager m = CorpusManager(manager);
+        _makeKnownCounterparty(m);
+
+        vm.prank(counterparty);
+        m.openDispute(counterparty, 1_000_000, "first");
+
+        vm.prank(counterparty);
+        vm.expectRevert(CorpusManager.DisputeCooldown.selector);
+        m.openDispute(counterparty, 1_000_000, "too-soon");
+    }
+
+    function test_initialize_onlyFactory() public {
+        CorpusManager m = new CorpusManager(usdc, address(this));
+        vm.prank(makeAddr("attacker"));
+        vm.expectRevert(CorpusManager.NotFactory.selector);
+        m.initialize(_baseMetadata(), _basePolicy(), principal, mediator, 1);
     }
 
     function test_rotatePrincipal() public {

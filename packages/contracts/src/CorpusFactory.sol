@@ -2,6 +2,7 @@
 pragma solidity ^0.8.28;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {CorpusManager} from "./CorpusManager.sol";
 import {ICorpusManager} from "./interfaces/ICorpusManager.sol";
 import {IIdentityRegistry} from "./interfaces/IIdentityRegistry.sol";
@@ -14,9 +15,17 @@ import {IIdentityRegistry} from "./interfaces/IIdentityRegistry.sol";
 ///         IdentityRegistry). For the demo this is fine — the identity exists, is queryable,
 ///         and is bound by event log to the manager. In a future version the factory should
 ///         transfer the NFT to the manager so the entity literally holds its own identity.
-contract CorpusFactory {
+contract CorpusFactory is ReentrancyGuard {
     IERC20 public immutable usdc;
     IIdentityRegistry public immutable identityRegistry;
+
+    /// @notice Maps a normalized (lowercase) legal-name hash → the manager address
+    ///         that holds it. Prevents two entities from claiming the same name and
+    ///         turns the factory into a queryable name registry.
+    mapping(bytes32 => address) public managerByName;
+
+    error NameAlreadyTaken(string legalName, address existingManager);
+    error EmptyLegalName();
 
     /// @notice ERC-721 safe-transfer hook — the ERC-8004 IdentityRegistry safe-mints the
     ///         identity NFT to this contract during `register()`. Returning the magic value
@@ -40,9 +49,54 @@ contract CorpusFactory {
         bytes32 operatingAgreementHash
     );
 
+    error ZeroAddress();
+
     constructor(IERC20 usdc_, IIdentityRegistry identityRegistry_) {
+        if (address(usdc_) == address(0) || address(identityRegistry_) == address(0)) revert ZeroAddress();
         usdc = usdc_;
         identityRegistry = identityRegistry_;
+    }
+
+    /// @notice Check whether a legal name is already registered. Pre-flight helper
+    ///         so clients can warn users before submitting the form() transaction.
+    /// @return taken True if the name is already in use.
+    /// @return existingManager The manager that currently holds the name (zero if free).
+    function isNameTaken(string calldata legalName)
+        external
+        view
+        returns (bool taken, address existingManager)
+    {
+        bytes32 key = _nameKey(legalName);
+        existingManager = managerByName[key];
+        taken = existingManager != address(0);
+    }
+
+    /// @dev Case-insensitive, whitespace-normalized name key. Treats space/tab/CR/LF as
+    ///      whitespace: strips leading/trailing, collapses consecutive to one space, folds A-Z.
+    function _nameKey(string memory s) internal pure returns (bytes32) {
+        bytes memory b = bytes(s);
+        if (b.length == 0) revert EmptyLegalName();
+        bytes memory out = new bytes(b.length);
+        uint256 len;
+        bool lastWasSpace = true;
+        for (uint256 i = 0; i < b.length; i++) {
+            uint8 c = uint8(b[i]);
+            if (c == 0x20 || c == 0x09 || c == 0x0A || c == 0x0D) {
+                if (!lastWasSpace) {
+                    out[len++] = bytes1(0x20);
+                    lastWasSpace = true;
+                }
+            } else {
+                if (c >= 0x41 && c <= 0x5A) c += 0x20;
+                out[len++] = bytes1(c);
+                lastWasSpace = false;
+            }
+        }
+        if (len > 0 && uint8(out[len - 1]) == 0x20) len--;
+        if (len == 0) revert EmptyLegalName();
+        bytes memory trimmed = new bytes(len);
+        for (uint256 i = 0; i < len; i++) trimmed[i] = out[i];
+        return keccak256(trimmed);
     }
 
     /// @notice Form a CORPUS entity in one transaction.
@@ -59,12 +113,21 @@ contract CorpusFactory {
         address principal_,
         address mediator_,
         string calldata identityMetadataURI
-    ) external returns (address manager, uint256 identityTokenId) {
+    ) external nonReentrant returns (address manager, uint256 identityTokenId) {
+        // Reject duplicate names BEFORE we mint an identity or deploy a manager.
+        // The check is case-insensitive so "Loom Trading DAO LLC" and
+        // "loom trading dao llc" collide — closes the obvious impersonation path.
+        bytes32 nameKey = _nameKey(md.legalName);
+        address existing = managerByName[nameKey];
+        if (existing != address(0)) revert NameAlreadyTaken(md.legalName, existing);
+
         identityTokenId = identityRegistry.register(identityMetadataURI);
 
-        CorpusManager m = new CorpusManager(usdc);
+        CorpusManager m = new CorpusManager(usdc, address(this));
         m.initialize(md, sp, principal_, mediator_, identityTokenId);
         manager = address(m);
+
+        managerByName[nameKey] = manager;
 
         emit CorpusFormed(
             manager,

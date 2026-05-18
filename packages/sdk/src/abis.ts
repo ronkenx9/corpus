@@ -58,6 +58,36 @@ export const corpusFactoryAbi = [
       { name: "operatingAgreementHash", type: "bytes32", indexed: false },
     ],
   },
+  {
+    type: "function",
+    name: "isNameTaken",
+    stateMutability: "view",
+    inputs: [{ name: "legalName", type: "string" }],
+    outputs: [
+      { name: "taken", type: "bool" },
+      { name: "existingManager", type: "address" },
+    ],
+  },
+  {
+    type: "function",
+    name: "managerByName",
+    stateMutability: "view",
+    inputs: [{ type: "bytes32" }],
+    outputs: [{ type: "address" }],
+  },
+  {
+    type: "error",
+    name: "NameAlreadyTaken",
+    inputs: [
+      { name: "legalName", type: "string" },
+      { name: "existingManager", type: "address" },
+    ],
+  },
+  {
+    type: "error",
+    name: "EmptyLegalName",
+    inputs: [],
+  },
 ] as const;
 
 export const corpusManagerAbi = [
@@ -67,7 +97,7 @@ export const corpusManagerAbi = [
     stateMutability: "nonpayable",
     inputs: [
       { name: "counterparty", type: "address" },
-      { name: "amount", type: "uint256" },
+      { name: "amount", type: "uint128" },
       { name: "memoHash", type: "bytes32" },
     ],
     outputs: [],
@@ -78,6 +108,7 @@ export const corpusManagerAbi = [
     stateMutability: "nonpayable",
     inputs: [
       { name: "counterparty", type: "address" },
+      { name: "amountClaimed", type: "uint128" },
       { name: "reason", type: "string" },
     ],
     outputs: [{ name: "disputeId", type: "uint256" }],
@@ -88,7 +119,7 @@ export const corpusManagerAbi = [
     stateMutability: "nonpayable",
     inputs: [
       { name: "disputeId", type: "uint256" },
-      { name: "awardToCounterparty", type: "uint256" },
+      { name: "awardToCounterparty", type: "uint128" },
       { name: "evidenceHash", type: "bytes32" },
     ],
     outputs: [],
@@ -153,6 +184,21 @@ export const corpusManagerAbi = [
           { name: "articlesHash", type: "bytes32" },
           { name: "operatingAgreementHash", type: "bytes32" },
           { name: "formedAt", type: "uint64" },
+        ],
+      },
+    ],
+  },
+  {
+    type: "function",
+    name: "policy",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [
+      {
+        type: "tuple",
+        components: [
+          { name: "dailyCapUsdc", type: "uint128" },
+          { name: "allowlistOnly", type: "bool" },
         ],
       },
     ],
